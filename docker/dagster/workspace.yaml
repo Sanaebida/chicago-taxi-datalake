@@ -1,0 +1,7 @@
+# The webserver and the daemon load the user code through a gRPC code server
+# (service "dagster-code"): runs execute in that container, which holds Spark/Java.
+load_from:
+  - grpc_server:
+      host: dagster-code
+      port: 4000
+      location_name: taxi_pipeline

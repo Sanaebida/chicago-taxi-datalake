@@ -1,0 +1,32 @@
+# Dagster instance configuration (shared by webserver, daemon, code server and runner)
+storage:
+  postgres:
+    postgres_db:
+      username: { env: DAGSTER_PG_USER }
+      password: { env: DAGSTER_PG_PASSWORD }
+      hostname: { env: DAGSTER_PG_HOST }
+      db_name: { env: DAGSTER_PG_DB }
+      port: 5432
+
+run_launcher:
+  module: dagster._core.launcher
+  class: DefaultRunLauncher
+
+# Runs are queued and dequeued by the daemon. A single Spark run at a time keeps
+# the local stack within a laptop's memory budget.
+concurrency:
+  runs:
+    max_concurrent_runs: 1
+
+run_monitoring:
+  enabled: true
+  start_timeout_seconds: 300
+
+compute_logs:
+  module: dagster._core.storage.local_compute_log_manager
+  class: LocalComputeLogManager
+  config:
+    base_dir: /opt/dagster/dagster_home/compute_logs
+
+telemetry:
+  enabled: false

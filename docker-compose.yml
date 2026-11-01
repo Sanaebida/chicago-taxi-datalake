@@ -1,0 +1,130 @@
+name: chicago-taxi-datalake
+
+# Common definition of every container running the Dagster/Spark image
+x-dagster: &dagster
+  build:
+    context: .
+    dockerfile: docker/dagster/Dockerfile
+  image: chicago-taxi-datalake/dagster:latest
+  env_file:
+    - path: .env
+      required: false   # works out of the box; .env only overrides defaults
+  environment: &dagster-env
+    DAGSTER_PG_HOST: postgres
+    S3_ENDPOINT: http://minio:9000
+    S3_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+    S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+  volumes:
+    - dagster-logs:/opt/dagster/dagster_home/compute_logs
+  restart: unless-stopped
+
+services:
+  # ---------------------------------------------------------------- storage ----
+  minio:
+    # MinIO's own images were removed from Docker Hub and quay.io in Sept 2026.
+    # Chainguard publishes a maintained build of the same MinIO server (same
+    # command, same S3 API). Override with MINIO_IMAGE if needed (see README).
+    image: ${MINIO_IMAGE:-cgr.dev/chainguard/minio:latest}
+    user: "0:0"   # the image runs as UID 65532 by default; root avoids volume permission errors
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # web console
+    volumes:
+      - minio-data:/data
+    # No healthcheck: the image ships no shell tools (curl/mc). datalake-init
+    # waits for the S3 endpoint to answer before anything else starts.
+    restart: unless-stopped
+
+  datalake-init:
+    <<: *dagster
+    command: ["python", "-m", "taxi_pipeline.bootstrap"]
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_started
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${DAGSTER_PG_USER:-dagster}
+      POSTGRES_PASSWORD: ${DAGSTER_PG_PASSWORD:-dagster}
+      POSTGRES_DB: ${DAGSTER_PG_DB:-dagster}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # ------------------------------------------------------------- orchestration --
+  # gRPC code server: holds the pipeline code + Spark; runs are executed here.
+  dagster-code:
+    <<: *dagster
+    command: ["dagster", "api", "grpc", "-h", "0.0.0.0", "-p", "4000", "-m", "taxi_pipeline.definitions"]
+    healthcheck:
+      test: ["CMD", "dagster", "api", "grpc-health-check", "-p", "4000"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 20s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      datalake-init:
+        condition: service_completed_successfully
+
+  dagster-webserver:
+    <<: *dagster
+    command: ["dagster-webserver", "-h", "0.0.0.0", "-p", "3000", "-w", "/opt/dagster/dagster_home/workspace.yaml"]
+    ports:
+      - "3000:3000"
+    depends_on:
+      dagster-code:
+        condition: service_healthy
+
+  dagster-daemon:
+    <<: *dagster
+    command: ["dagster-daemon", "run", "-w", "/opt/dagster/dagster_home/workspace.yaml"]
+    depends_on:
+      dagster-code:
+        condition: service_healthy
+
+  # One-shot end-to-end run (bronze -> silver -> gold). Not started by a plain
+  # `docker compose up`: use `make run` or `docker compose --profile autorun up`.
+  pipeline-runner:
+    <<: *dagster
+    profiles: ["autorun"]
+    command: ["/opt/scripts/run_pipeline.sh"]
+    restart: "no"
+    depends_on:
+      dagster-code:
+        condition: service_healthy
+
+  # ------------------------------------------------------------------ exposure --
+  dashboard:
+    build:
+      context: .
+      dockerfile: docker/dashboard/Dockerfile
+    image: chicago-taxi-datalake/dashboard:latest
+    environment:
+      DATALAKE_ROOT: ${DATALAKE_ROOT:-s3a://datalake}
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "8501:8501"
+    depends_on:
+      minio:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  minio-data:
+  postgres-data:
+  dagster-logs:

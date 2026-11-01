@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "taxi-pipeline"
+version = "0.1.0"
+description = "Chicago taxi trips medallion datalake: Dagster + PySpark + MinIO"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  "dagster==1.13.28",
+  "dagster-webserver==1.13.28",
+  "dagster-postgres==0.29.28",
+  "sqlalchemy>=2.0,<2.1",
+  "pyspark==3.5.7",
+  "boto3>=1.35",
+  "requests>=2.32",
+  "pandas>=2.2",
+  "tabulate>=0.9",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[tool.setuptools.packages.find]
+include = ["taxi_pipeline*"]
+
+[tool.setuptools.package-data]
+"taxi_pipeline.reference" = ["*.csv"]
+
+[tool.dagster]
+module_name = "taxi_pipeline.definitions"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 110
